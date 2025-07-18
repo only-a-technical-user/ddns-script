@@ -31,6 +31,10 @@ function s {
     echo "${GREEN}$(now)${TAB}${GREEN_BOLD}SUCCESS${TAB}${GREEN}$1" >> "$LOG_FILE"
 }
 
+# The location of the log file to which the output is written
+LOG_FILE="/home/${USER}/.ddns/logs/ddns.log"
+mkdir -p "$(dirname "$LOG_FILE")"
+
 SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
 CONFIG_FILE="${SCRIPT_DIR}/.env"
 if [[ -n "$1" ]]; then
