@@ -103,63 +103,39 @@ fi
 IFS=',' read -r -a domains <<< "$DNS_RECORD"
 
 for domain in "${domains[@]}"; do
-  # Retrieve IP address from DNS record
-  if [ "${PROXIED}" == "false" ]; then
-    DNS_RECORD_IP=$(nslookup "${domain}" 1.1.1.1 | awk '/Address/ { print $2 }' | sed -n '2p')
-
-    if [ -z "${DNS_RECORD_IP}" ]; then
-      e "Domain '${DNS_RECORD_IP}' unable to be resolved via DNS server '1.1.1.1'"
-      exit 1
-    fi
-    IS_PROXIED="${PROXIED}"
-  fi
-
-  # Get Proxy status and DNS record IP address from Cloudflare API, if record *should* be proxied
-  if [ "${PROXIED}" == "true" ]; then
-    DNS_RECORD_INFO=$(curl -s -X GET "${CLOUDFLARE_API_URL}${domain}" \
-      -H "Authorization: Bearer ${ZONE_API_TOKEN}" \
-      -H "Content-Type: application/json")
+    i "Checking for changes for domain '${domain}'"
+    DNS_RECORD_INFO=$(curl -s -X GET "${CLOUDFLARE_API_URL}${CLOUDFLARE_API_GET_PARAMS}${domain}" \
+        -H "Authorization: Bearer ${ZONE_API_TOKEN}" \
+        -H "Content-Type: application/json")
     if [[ ${DNS_RECORD_INFO} == *"\"success\":false"* ]]; then
-      i "${DNS_RECORD_INFO}"
-      e "Unable to retrieve record information from Cloudflare API"
-      exit 1
+        i "${DNS_RECORD_INFO}"
+        e "Unable to retrieve record information from Cloudflare API"
+        exit 1
     fi
     IS_PROXIED=$(echo "${DNS_RECORD_INFO}" | grep -o '"proxied":[^,]*' | grep -o '[^:]*$')
     DNS_RECORD_IP=$(echo "${DNS_RECORD_INFO}" | grep -o '"content":"[^"]*' | cut -d'"' -f 4)
-  fi
 
-  # Check if IP address or Proxy status have changed
-  if [ ${dns_record_ip} == ${ip} ] && [ "${IS_PROXIED}" == "${PROXIED}" ]; then
-    echo "==> DNS record IP of ${record} is ${dns_record_ip}", no changes needed.
-    continue
-  fi
+    # Check if IP address or Proxy status have changed
+    if [ "${DNS_RECORD_IP}" == "${IP}" ] && [ "${IS_PROXIED}" == "${PROXIED}" ]; then
+        s "Domain '${domain}' requires no updates"
+        continue
+    fi
 
-  echo "==> DNS record of ${record} is: ${dns_record_ip}. Trying to update..."
+    i "DNS record for domain '${domain}' is outdated, updating now..."
 
-  ### Get the dns record information from Cloudflare API
-  cloudflare_record_info=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/$zoneid/dns_records?type=A&name=$record" \
-    -H "Authorization: Bearer $cloudflare_zone_api_token" \
-    -H "Content-Type: application/json")
-  if [[ ${cloudflare_record_info} == *"\"success\":false"* ]]; then
-    echo ${cloudflare_record_info}
-    echo "Error! Can't get ${record} record information from Cloudflare API"
-    exit 0
-  fi
+    # Get DNS record ID
+    DNS_RECORD_ID=$(echo "${DNS_RECORD_INFO}" | grep -o '"id":"[^"]*' | cut -d'"' -f4)
 
-  ### Get the dns record id from response
-  cloudflare_dns_record_id=$(echo ${cloudflare_record_info} | grep -o '"id":"[^"]*' | cut -d'"' -f4)
+    ### Push new dns record information to Cloudflare API
+    UPDATE_DNS_RECORD=$(curl -s -X PUT "${CLOUDFLARE_API_URL}/${DNS_RECORD_ID}" \
+        -H "Authorization: Bearer ${ZONE_API_TOKEN}" \
+        -H "Content-Type: application/json" \
+        --data "{\"type\":\"A\",\"name\":\"$domain\",\"content\":\"$IP\",\"ttl\":$TTL,\"proxied\":$PROXIED}")
+    if [[ ${UPDATE_DNS_RECORD} == *"\"success\":false"* ]]; then
+        i "${UPDATE_DNS_RECORD}"
+        e "Update of DNS record for domain '${domain}' failed."
+        exit 1
+    fi
 
-  ### Push new dns record information to Cloudflare API
-  update_dns_record=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/$zoneid/dns_records/$cloudflare_dns_record_id" \
-    -H "Authorization: Bearer $cloudflare_zone_api_token" \
-    -H "Content-Type: application/json" \
-    --data "{\"type\":\"A\",\"name\":\"$record\",\"content\":\"$ip\",\"ttl\":$ttl,\"proxied\":$proxied}")
-  if [[ ${update_dns_record} == *"\"success\":false"* ]]; then
-    echo ${update_dns_record}
-    echo "Error! Update failed"
-    exit 0
-  fi
-
-  echo "Success!"
-  echo "==> $record DNS Record updated to: $ip, ttl: $ttl, proxied: $proxied"
+    s "DNS record for domain '${domain}' updated to: $IP, ttl: $TTL, proxied: $PROXIED"
 done
