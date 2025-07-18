@@ -35,10 +35,23 @@ function s {
 LOG_FILE="/home/${USER}/.ddns/logs/ddns.log"
 mkdir -p "$(dirname "$LOG_FILE")"
 
+# Truncate log file, if to long
+N=100000
+if [[ -f ${LOG_FILE} ]]; then
+    LINES=$(wc -l < "${LOG_FILE}")
+    if (( LINES > N )); then
+        TRUNCATE_TO=$(( N / 2 ))
+        sed -i "1,${TRUNCATE_TO}d" "${LOG_FILE}"
+        w "Truncated log file '${LOG_FILE}' by first n:'${TRUNCATE_TO}' rows"
+    else
+        i "Log file to short to truncate"
+    fi
+fi
+
 SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
 CONFIG_FILE="${SCRIPT_DIR}/.env"
 if [[ -n "$1" ]]; then
-    CONFIG_FILE="${SCRIPT_DIR}/$1"
+    CONFIG_FILE="$1"
     i "Configuration file path: '${CONFIG_FILE}'"
 fi
 
