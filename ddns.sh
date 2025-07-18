@@ -1,132 +1,135 @@
 #!/usr/bin/env bash
 
-###  Create .update-cloudflare-dns.log file of the last run for debug
-parent_path="$(dirname "${BASH_SOURCE[0]}")"
-FILE=${parent_path}/update-cloudflare-dns.log
-if ! [ -x "$FILE" ]; then
-  touch "$FILE"
+TAB="\t"
+
+CYAN="\033[0;36m"
+CYAN_BOLD="\033[0;36;1m"
+RED="\033[0;31m"
+RED_BOLD="\033[0;31;1m"
+YELLOW="\033[0;33m"
+YELLOW_BOLD="\033[0;33;1m"
+GREEN="\033[0;32m"
+GREEN_BOLD="\033[0;32;1m"
+
+function now {
+    echo "$(date "+%Y-%m-%d %H:%M:%S")"
+}
+
+function i {
+    echo "${CYAN}$(now)${TAB}${CYAN_BOLD}INFO${TAB}${CYAN}${1}" >> "$LOG_FILE"
+}
+
+function e {
+    echo "${RED}$(now)${TAB}${RED_BOLD}ERROR${TAB}${RED}$1" >> "$LOG_FILE"
+}
+
+function w {
+    echo "${YELLOW}$(now)${TAB}${YELLOW_BOLD}WARNING${TAB}${YELLOW}$1" >> "$LOG_FILE"
+}
+
+function s {
+    echo "${GREEN}$(now)${TAB}${GREEN_BOLD}SUCCESS${TAB}${GREEN}$1" >> "$LOG_FILE"
+}
+
+SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
+CONFIG_FILE="${SCRIPT_DIR}/.env"
+if [[ -n "$1" ]]; then
+    CONFIG_FILE="${SCRIPT_DIR}/$1"
+    i "Configuration file path: '${CONFIG_FILE}'"
 fi
 
-LOG_FILE=${parent_path}'/update-cloudflare-dns.log'
+i "Loading configuration file"
 
-### Write last run of STDOUT & STDERR as log file and prints to screen
-exec > >(tee $LOG_FILE) 2>&1
-echo "==> $(date "+%Y-%m-%d %H:%M:%S")"
-
-### Validate if config-file exists
-
-if [[ -z "$1" ]]; then
-  if ! source ${parent_path}/update-cloudflare-dns.conf; then
-    echo 'Error! Missing configuration file update-cloudflare-dns.conf or invalid syntax!'
-    exit 0
-  fi
+# Validate if config file exists
+if [[ -f "$CONFIG_FILE" ]]; then
+    if ! source "$CONFIG_FILE"; then
+        e "Configuration file '$CONFIG_FILE' has invalid syntax."
+        exit 1
+    fi
 else
-  if ! source ${parent_path}/"$1"; then
-    echo 'Error! Missing configuration file '$1' or invalid syntax!'
-    exit 0
-  fi
+    e "Missing configuration file '$CONFIG_FILE'"
+    exit 1
 fi
 
-### Check validity of "ttl" parameter
-if [ "${ttl}" -lt 120 ] || [ "${ttl}" -gt 7200 ] && [ "${ttl}" -ne 1 ]; then
-  echo "Error! ttl out of range (120-7200) or not set to 1"
-  exit
+# Ensure that the directory of the log file exists
+mkdir -p "$(dirname "$LOG_FILE")"
+
+# Check validity of "TTL" parameter
+if [ "${TTL}" -lt 120 ] || [ "${TTL}" -gt 7200 ] && [ "${TTL}" -ne 1 ]; then
+    e "TTL out of range (120-7200) or not set to '1'"
+    exit 1
 fi
 
-### Check validity of "proxied" parameter
-if [ "${proxied}" != "false" ] && [ "${proxied}" != "true" ]; then
-  echo 'Error! Incorrect "proxied" parameter, choose "true" or "false"'
-  exit 0
+# Check validity of "PROXIED" parameter
+if [ "${PROXIED}" != "false" ] && [ "${PROXIED}" != "true" ]; then
+    e "Incorrect 'proxied' parameter, choose 'true' or 'false'"
+    exit 1
 fi
 
-### Check validity of "what_ip" parameter
-if [ "${what_ip}" != "external" ] && [ "${what_ip}" != "internal" ]; then
-  echo 'Error! Incorrect "what_ip" parameter, choose "external" or "internal"'
-  exit 0
+# Check validity of "IP_TYPE" parameter
+if [ "${IP_TYPE}" != "external" ] && [ "${IP_TYPE}" != "internal" ]; then
+    e "Incorrect 'IP_TYPE' parameter, choose 'external' or 'internal'"
+    exit 1
 fi
 
-### Check if set to internal ip and proxy
-if [ "${what_ip}" == "internal" ] && [ "${proxied}" == "true" ]; then
-  echo 'Error! Internal IP cannot be proxied'
-  exit 0
+# Check if set to internal IP and proxy
+if [ "${IP_TYPE}" == "internal" ] && [ "${PROXIED}" == "true" ]; then
+    e "Internal IP cannot be proxied"
+    exit 1
 fi
 
-### Valid IPv4 Regex
-REIP='^((25[0-5]|(2[0-4]|1[0-9]|[1-9]|)[0-9])\.){3}(25[0-5]|(2[0-4]|1[0-9]|[1-9]|)[0-9])$'
-
-### Get external ip from https://checkip.amazonaws.com
-if [ "${what_ip}" == "external" ]; then
-  ip=$(curl -4 -s -X GET https://checkip.amazonaws.com --max-time 10)
-  if [ -z "$ip" ]; then
-    echo "Error! Can't get external ip from https://checkip.amazonaws.com"
-    exit 0
-  fi
-  if ! [[ "$ip" =~ $REIP ]]; then
-    echo "Error! IP Address returned was invalid!"
-    exit 0
-  fi
-  echo "==> External IP is: $ip"
-fi
-
-### Get Internal ip from primary interface
-if [ "${what_ip}" == "internal" ]; then
-  ### Check if "IP" command is present, get the ip from interface
-  if which ip >/dev/null; then
-    ### "ip route get" (linux)
-    interface=$(ip route get 1.1.1.1 | awk '/dev/ { print $5 }')
-    ip=$(ip -o -4 addr show ${interface} scope global | awk '{print $4;}' | cut -d/ -f 1)
-  ### If no "ip" command use "ifconfig" instead, to get the ip from interface
-  else
-    ### "route get" (macOS, Freebsd)
-    interface=$(route get 1.1.1.1 | awk '/interface:/ { print $2 }')
-    ip=$(ifconfig ${interface} | grep 'inet ' | awk '{print $2}')
-  fi
-  if [ -z "$ip" ]; then
-    echo "Error! Can't read ip from ${interface}"
-    exit 0
-  fi
-  echo "==> Internal ${interface} IP is: $ip"
-fi
-
-### Build coma separated array fron dns_record parameter to update multiple A records
-IFS=',' read -d '' -ra dns_records <<<"$dns_record,"
-unset 'dns_records[${#dns_records[@]}-1]'
-declare dns_records
-
-for record in "${dns_records[@]}"; do
-  ### Get IP address of DNS record from 1.1.1.1 DNS server when proxied is "false"
-  if [ "${proxied}" == "false" ]; then
-    ### Check if "nslookup" command is present
-    if which nslookup >/dev/null; then
-      dns_record_ip=$(nslookup ${record} 1.1.1.1 | awk '/Address/ { print $2 }' | sed -n '2p')
-    else
-      ### if no "nslookup" command use "host" command
-      dns_record_ip=$(host -t A ${record} 1.1.1.1 | awk '/has address/ { print $4 }' | sed -n '1p')
+# Get external IP address
+if [ "${IP_TYPE}" == "external" ]; then
+    IP=$(curl -s -m 30 -X GET "${IP_API}")
+    if [ -z "$IP" ]; then
+        e "Cannot get external IP address from '${IP_API}'"
+        exit 1
     fi
-
-    if [ -z "$dns_record_ip" ]; then
-      echo "Error! Can't resolve the ${record} via 1.1.1.1 DNS server"
-      exit 0
+    if ! [[ "${IP}" =~ ${IP_REGEX} ]]; then
+        e "IP Address returned was invalid"
+        exit 1
     fi
-    is_proxed="${proxied}"
+    i "External IP address: '${IP}'"
+fi
+
+# Get Internal ip from primary interface
+if [ "${IP_TYPE}" == "internal" ]; then
+    # TODO: IMPLEMENT
+    e "couldn't be bothered implementing this, will fix later"
+    exit 1
+fi
+
+# Build array from DNS_RECORD variable, to update multiple domains
+IFS=',' read -r -a domains <<< "$DNS_RECORD"
+
+for domain in "${domains[@]}"; do
+  # Retrieve IP address from DNS record
+  if [ "${PROXIED}" == "false" ]; then
+    DNS_RECORD_IP=$(nslookup "${domain}" 1.1.1.1 | awk '/Address/ { print $2 }' | sed -n '2p')
+
+    if [ -z "${DNS_RECORD_IP}" ]; then
+      e "Domain '${DNS_RECORD_IP}' unable to be resolved via DNS server '1.1.1.1'"
+      exit 1
+    fi
+    IS_PROXIED="${PROXIED}"
   fi
 
-  ### Get the dns record id and current proxy status from Cloudflare API when proxied is "true"
-  if [ "${proxied}" == "true" ]; then
-    dns_record_info=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/$zoneid/dns_records?type=A&name=$record" \
-      -H "Authorization: Bearer $cloudflare_zone_api_token" \
+  # Get Proxy status and DNS record IP address from Cloudflare API, if record *should* be proxied
+  if [ "${PROXIED}" == "true" ]; then
+    DNS_RECORD_INFO=$(curl -s -X GET "${CLOUDFLARE_API_URL}${domain}" \
+      -H "Authorization: Bearer ${ZONE_API_TOKEN}" \
       -H "Content-Type: application/json")
-    if [[ ${dns_record_info} == *"\"success\":false"* ]]; then
-      echo ${dns_record_info}
-      echo "Error! Can't get dns record info from Cloudflare API"
-      exit 0
+    if [[ ${DNS_RECORD_INFO} == *"\"success\":false"* ]]; then
+      i "${DNS_RECORD_INFO}"
+      e "Unable to retrieve record information from Cloudflare API"
+      exit 1
     fi
-    is_proxed=$(echo ${dns_record_info} | grep -o '"proxied":[^,]*' | grep -o '[^:]*$')
-    dns_record_ip=$(echo ${dns_record_info} | grep -o '"content":"[^"]*' | cut -d'"' -f 4)
+    IS_PROXIED=$(echo "${DNS_RECORD_INFO}" | grep -o '"proxied":[^,]*' | grep -o '[^:]*$')
+    DNS_RECORD_IP=$(echo "${DNS_RECORD_INFO}" | grep -o '"content":"[^"]*' | cut -d'"' -f 4)
   fi
 
-  ### Check if ip or proxy have changed
-  if [ ${dns_record_ip} == ${ip} ] && [ ${is_proxed} == ${proxied} ]; then
+  # Check if IP address or Proxy status have changed
+  if [ ${dns_record_ip} == ${ip} ] && [ "${IS_PROXIED}" == "${PROXIED}" ]; then
     echo "==> DNS record IP of ${record} is ${dns_record_ip}", no changes needed.
     continue
   fi
@@ -157,22 +160,6 @@ for record in "${dns_records[@]}"; do
     exit 0
   fi
 
-  echo "==> Success!"
+  echo "Success!"
   echo "==> $record DNS Record updated to: $ip, ttl: $ttl, proxied: $proxied"
-
-  ### Telegram notification
-  if [ ${notify_me_telegram} == "no" ]; then
-    exit 0
-  fi
-
-  if [ ${notify_me_telegram} == "yes" ]; then
-    telegram_notification=$(
-      curl -s -X GET "https://api.telegram.org/bot${telegram_bot_API_Token}/sendMessage?chat_id=${telegram_chat_id}" --data-urlencode "text=${record} DNS record updated to: ${ip}"
-    )
-    if [[ ${telegram_notification=} == *"\"ok\":false"* ]]; then
-      echo ${telegram_notification=}
-      echo "Error! Telegram notification failed"
-      exit 0
-    fi
-  fi
 done
