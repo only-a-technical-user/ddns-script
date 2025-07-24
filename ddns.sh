@@ -32,7 +32,7 @@ function s {
 }
 
 # The location of the log file to which the output is written
-LOG_FILE="/home/${USER}/.ddns/logs/ddns.log"
+LOG_FILE="${HOME}/.ddns/logs/ddns.log"
 mkdir -p "$(dirname "$LOG_FILE")"
 
 # Truncate log file, if to long
